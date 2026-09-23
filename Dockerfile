@@ -10,6 +10,12 @@ FROM rclone/rclone:1.75.1
 RUN apk add --no-cache \
   bash
 
+# non-root user for the rclone jobs (uid/gid 1000 = kevin on the host).
+# busybox crond itself must stay root (it cannot drop privileges as non-root),
+# so the cron jobs switch to appuser via su instead.
+RUN addgroup -g 1000 appuser && \
+    adduser -D -H -u 1000 -G appuser appuser
+
 # copy backup script to crond daily folder
 COPY backup.sh /
 
@@ -20,8 +26,12 @@ COPY entrypoint.sh /
 RUN chmod +x /entrypoint.sh && \
     chmod +x /backup.sh
 
-RUN echo "0 */12 * * * /backup.sh" > /etc/crontabs/root
-RUN echo "0 * * * * /md-sync.sh" > /etc/crontabs/root
+# crond runs as root; the jobs run as appuser (uid=1000) via su.
+# The output redirect lives here (root context) - /proc/1/fd/1 is not writable
+# by appuser, so the scripts themselves must not redirect.
+# NOTE: single RUN with printf - a second "RUN echo ... >" would overwrite
+# the first entry (that bug existed before, killing the backup.sh cron).
+RUN printf '0 */12 * * * su -s /bin/sh appuser -c /backup.sh >> /proc/1/fd/1 2>&1\n0 * * * * su -s /bin/sh appuser -c /md-sync.sh >> /proc/1/fd/1 2>&1\n' > /etc/crontabs/root
 
 ENTRYPOINT ["/entrypoint.sh"]
 
